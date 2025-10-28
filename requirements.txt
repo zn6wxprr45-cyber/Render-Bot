@@ -5,3 +5,7 @@ packaging              # Добавлен, чтобы решить ModuleNotFoun
 python-telegram-bot==22.5
 firebase-admin
 gunicorn
+python-telegram-bot[webhooks]~=22.5
+gunicorn
+firebase-admin
+google-cloud-firestore
