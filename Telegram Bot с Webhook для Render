@@ -12,6 +12,7 @@ import os
 import json
 import datetime
 import asyncio
+import threading
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import (
     Application,
@@ -31,12 +32,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- ГЛОБАЛЬНЫЕ КОНСТАНТЫ И ПЕРЕМЕННЫЕ ---
+# --- ГЛОБАЛЬНЫЕ КОНСТАНТЫ И ПЕРЕМЕННЫЕ (ИЗВЛЕКАЮТСЯ ИЗ ОКРУЖЕНИЯ PYTHON) ---
 
 # Глобальная переменная для ID приложения (извлекается из окружения)
+# Используем переменную окружения CANVAS_APP_ID или по умолчанию
 appId = os.environ.get("CANVAS_APP_ID", 'default-app-id')
 
 # Глобальная переменная для конфигурации Firebase (извлекается из окружения)
+# Используем переменную окружения FIREBASE_CONFIG или пустой JSON-объект
 firebase_config_str = os.environ.get("FIREBASE_CONFIG", '{}')
 
 # Глобальный клиент Firestore
@@ -71,14 +74,13 @@ def initialize_firebase():
     try:
         firebase_config = json.loads(firebase_config_str)
 
-        # Используем конфигурацию, если она предоставлена
+        # Используем конфигурацию, если она предоставлена (ожидается формат Service Account)
         if firebase_config and firebase_config.get('type') == 'service_account':
              cred = credentials.Certificate(firebase_config)
         else:
              # Попытка инициализации из ApplicationDefault (для сред, где это настроено)
              logger.warning("Firebase config не содержит ключа 'service_account'. Попытка использовать ApplicationDefault.")
              cred = credentials.ApplicationDefault()
-
 
         # Проверяем, не инициализировано ли приложение
         if not firebase_admin._apps:
@@ -102,7 +104,6 @@ def initialize_firebase():
 async def get_user_id(update: Update) -> str | None:
     """
     Возвращает Telegram User ID в виде строки.
-    Это будет использоваться как {userId} в пути Firestore.
     """
     if not update.effective_user:
         logger.warning("Не удалось получить user_id из update")
@@ -127,13 +128,10 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработчик команды /start.
-    Приветствует пользователя, показывает главное меню и регистрирует
-    ежедневное напоминание.
     """
     user = update.effective_user
     user_id = await get_user_id(update)
-    chat_id = update.effective_chat.id
-
+    
     logger.info(f"Пользователь {user.first_name} (ID: {user_id}) запустил бота.")
 
     await update.message.reply_html(
@@ -163,26 +161,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка сохранения профиля {user_id} в Firestore: {e}")
             await update.message.reply_text("Не удалось сохранить ваш профиль. Некоторые функции могут быть недоступны.")
 
-    # --- Настройка ежедневного напоминания (Работает только в режиме run_polling) ---
-    # В режиме Webhook (Render/Gunicorn) job_queue не работает, т.к. процесс не живет постоянно.
-    # Если вы хотите напоминания, нужно использовать внешний сервис (Cron job).
-    # Мы оставляем этот код закомментированным или удаляем его в Webhook-версии,
-    # т.к. он не будет работать на Render.
-
-    # if context.job_queue:
-    #     job_name = f"daily_reminder_{chat_id}"
-    #     current_jobs = context.job_queue.get_jobs_by_name(job_name)
-    #     ...
-    # return ConversationHandler.END
+    # В Webhook-режиме ежедневные напоминания не работают, т.к. процесс не живет постоянно.
     return ConversationHandler.END
 
 
 # --- Обработчики статической информации ---
 
 async def show_illness_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Показывает информационный листок о болезни.
-    """
+    """Показывает информационный листок о болезни."""
     logger.info(f"Пользователь {await get_user_id(update)} запросил 'О заболевании'")
     text = (
         "ℹ️ **О постинсультном таламическом синдроме (синдром Дежерина-Русси)**\n\n"
@@ -201,9 +187,7 @@ async def show_illness_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Показывает информацию о режиме работы.
-    """
+    """Показывает информацию о режиме работы."""
     logger.info(f"Пользователь {await get_user_id(update)} запросил 'Информация о клинике'")
     text = (
         "**Режим работы нашей онлайн-поликлиники:**\n\n"
@@ -216,9 +200,7 @@ async def show_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Показывает информацию о срочной помощи.
-    """
+    """Показывает информацию о срочной помощи."""
     logger.info(f"Пользователь {await get_user_id(update)} запросил 'Срочная помощь'")
     text = (
         "🚨 **СРОЧНАЯ МЕДИЦИНСКАЯ ПОМОЩЬ** 🚨\n\n"
@@ -234,9 +216,7 @@ async def show_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Логика Обратной связи (ConversationHandler) ---
 
 async def feedback_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Начинает диалог сбора обратной связи.
-    """
+    """Начинает диалог сбора обратной связи."""
     logger.info(f"Пользователь {await get_user_id(update)} начал 'Обратная связь'")
     await update.message.reply_text(
         "Пожалуйста, напишите ваш вопрос, отзыв или предложение. Мы передадим его администратору.\n\n"
@@ -247,9 +227,7 @@ async def feedback_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Получает, сохраняет обратную связь и завершает диалог.
-    """
+    """Получает, сохраняет обратную связь и завершает диалог."""
     user_id = await get_user_id(update)
     feedback_text = update.message.text
 
@@ -262,7 +240,7 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 "feedback_text": feedback_text,
                 "timestamp": firestore.SERVER_TIMESTAMP,
             }
-            # .add() создает документ с авто-ID
+            # Сохраняем в коллекцию feedback, доступную только для этого пользователя
             db.collection(f"artifacts/{appId}/users/{user_id}/feedback").add(feedback_data)
             logger.info(f"Отзыв от {user_id} сохранен в Firestore.")
 
@@ -291,9 +269,7 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # --- Логика Ежедневного Опроса (ConversationHandler) ---
 
 async def survey_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Начинает ежедневный опрос. (Вопрос 1)
-    """
+    """Начинает ежедневный опрос. (Вопрос 1)"""
     user_id = await get_user_id(update)
     logger.info(f"Пользователь {user_id} начал опрос.")
 
@@ -317,9 +293,7 @@ async def survey_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def q1_pain_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Сохраняет ответ 1. Задает Вопрос 2.
-    """
+    """Сохраняет ответ 1. Задает Вопрос 2."""
     answer = update.message.text
     if not answer.isdigit() or not (0 <= int(answer) <= 10):
         await update.message.reply_text("Пожалуйста, выберите число от 0 до 10.")
@@ -344,9 +318,7 @@ async def q1_pain_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def q2_pain_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Сохраняет ответ 2. Задает Вопрос 3.
-    """
+    """Сохраняет ответ 2. Задает Вопрос 3."""
     answer = update.message.text
     context.user_data["survey"]["pain_type"] = answer
     logger.info(f"Q2 (Pain Type): {answer}")
@@ -362,9 +334,7 @@ async def q2_pain_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def q3_medication(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Сохраняет ответ 3. Задает Вопрос 4.
-    """
+    """Сохраняет ответ 3. Задает Вопрос 4."""
     answer = update.message.text
     context.user_data["survey"]["medication"] = answer
     logger.info(f"Q3 (Medication): {answer}")
@@ -384,9 +354,7 @@ async def q3_medication(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def q4_side_effects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Сохраняет ответ 4. Задает Вопрос 5.
-    """
+    """Сохраняет ответ 4. Задает Вопрос 5."""
     answer = update.message.text
     context.user_data["survey"]["side_effects"] = answer
     logger.info(f"Q4 (Side Effects): {answer}")
@@ -405,9 +373,7 @@ async def q4_side_effects(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def q5_comments_and_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Сохраняет ответ 5. Сохраняет весь опрос в Firestore. Завершает диалог.
-    """
+    """Сохраняет ответ 5, весь опрос в Firestore и завершает диалог."""
     answer = update.message.text
     context.user_data["survey"]["comments"] = answer
     logger.info(f"Q5 (Comments): {answer}")
@@ -449,9 +415,7 @@ async def q5_comments_and_save(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Отменяет текущий диалог (опрос или обратную связь).
-    """
+    """Отменяет текущий диалог (опрос или обратную связь)."""
     user = update.effective_user
     logger.info(f"Пользователь {user.first_name} отменил операцию.")
     await update.message.reply_text(
@@ -467,7 +431,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # --- ГЛАВНАЯ ФУНКЦИЯ И КОНФИГУРАЦИЯ WEBHOOK ---
 
 # Здесь мы создаем объект application, который нужен Gunicorn
-# Переменная application должна быть глобальной или доступна для импорта
 application = None
 
 def setup_application():
@@ -480,7 +443,7 @@ def setup_application():
     initialize_firebase()
     if not db:
         logger.critical("Не удалось инициализировать Firestore. Бот не может быть запущен.")
-        # Вместо return лучше бросить исключение, чтобы Gunicorn знал об ошибке
+        # Вызываем исключение, чтобы Gunicorn знал об ошибке
         raise RuntimeError("Firebase initialization failed.")
 
     # 2. Получение токена бота
@@ -541,22 +504,20 @@ def setup_application():
     logger.info("Application handlers set up successfully.")
     return application
 
-# Создаем приложение при старте Gunicorn
+# Создаем объект application, который Gunicorn будет использовать как WSGI/ASGI приложение.
+# Вызов происходит при импорте модуля.
 application = setup_application()
 
 
 async def set_webhook_on_startup(app: Application):
     """
     Устанавливает Webhook при запуске, используя URL из переменных окружения.
-    Это асинхронная операция, которая выполнится только один раз.
     """
     WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
     if not WEBHOOK_URL:
-        logger.warning("WEBHOOK_URL не установлен в переменных окружения. Webhook не будет настроен.")
+        logger.warning("WEBHOOK_URL не установлен. Webhook не будет настроен.")
         return
 
-    # Render запускает Gunicorn на корневом URL, поэтому путь не нужен.
-    # Если бы вы использовали ngrok, путь мог бы быть /telegram.
     webhook_url = WEBHOOK_URL
 
     try:
@@ -565,30 +526,13 @@ async def set_webhook_on_startup(app: Application):
         logger.info(f"Webhook успешно установлен на URL: {webhook_url}")
     except Exception as e:
         logger.error(f"Не удалось установить Webhook: {e}")
-        # В случае неудачи, можно попытаться выйти, но Gunicorn будет пытаться перезапустить
-
-# Запускаем установку Webhook при первом запуске приложения
-# Gunicorn запускает приложение, и нам нужно убедиться, что Webhook установлен.
-# Мы можем использовать asyncio.run_coroutine_threadsafe или просто вызывать его
-# в асинхронном контексте, что сложно с Gunicorn.
-
-# Поскольку `python-telegram-bot` версии 20.x имеет встроенные методы
-# для работы с Webhook и Gunicorn, мы можем использовать его.
-# В Gunicorn `application` будет использоваться как WSGI/ASGI приложение.
-
-# Чтобы выполнить `set_webhook`, нам нужно запустить асинхронный код.
-# Мы можем добавить его как задачу при запуске Gunicorn.
-# Но самый простой способ для однократной операции - это выполнить ее
-# синхронно в главном потоке при инициализации Gunicorn, если это возможно.
-
-import threading
 
 def run_once_set_webhook():
     """Синхронно запускает установку Webhook."""
     try:
         asyncio.run(set_webhook_on_startup(application))
     except RuntimeError as e:
-        # Это может случиться, если нет запущенного цикла событий
+        # Если нет запущенного цикла событий, создаем новый (типично для Gunicorn)
         logger.warning(f"Не удалось запустить set_webhook синхронно: {e}. Попробуем с новым циклом.")
         try:
             loop = asyncio.new_event_loop()
@@ -604,10 +548,4 @@ if os.environ.get("WEBHOOK_URL"):
 else:
     logger.warning("WEBHOOK_URL не установлен. Webhook не настроен. Проверьте переменные окружения Render.")
 
-
-# Главная точка входа для Gunicorn (application - это объект ASGI/WSGI)
-# Gunicorn будет вызывать `application` для обработки каждого входящего запроса.
-
-# Если вы хотите использовать этот файл, сохраните его как telegram_bot.py
-# и убедитесь, что ваш Procfile_web содержит:
-# web: gunicorn telegram_bot:application --workers 1 --bind 0.0.0.0:$PORT
+# Gunicorn будет использовать глобальную переменную `application`
