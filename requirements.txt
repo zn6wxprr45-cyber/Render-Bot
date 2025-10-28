@@ -1,0 +1,4 @@
+python-telegram-bot
+firebase-admin
+google-cloud-firestore # Добавлен для корректной работы с Firestore
+packaging              # Добавлен, чтобы решить ModuleNotFoundError
